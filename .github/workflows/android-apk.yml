@@ -31,13 +31,18 @@ jobs:
         working-directory: agenda-clinica-app/android
         run: ./gradlew assembleDebug
       - name: Verify APK and app bundle
+        shell: bash
         run: |
+          set -euxo pipefail
           APK=agenda-clinica-app/android/app/build/outputs/apk/debug/app-debug.apk
           test -s "$APK"
-          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | head -n 1)
-          test -n "$APKSIGNER"
-          "$APKSIGNER" verify --verbose "$APK"
-          python3 -c 'import sys,zipfile; z=zipfile.ZipFile(sys.argv[1]); assert "assets/index.android.bundle" in z.namelist(); print("JS bundle found")' "$APK"
+          echo "APK file: $APK"
+          ls -lh "$APK"
+          SDK_BUILD_TOOLS="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -n 1)"
+          echo "Android build-tools: $SDK_BUILD_TOOLS"
+          test -x "$SDK_BUILD_TOOLS/apksigner"
+          "$SDK_BUILD_TOOLS/apksigner" verify --verbose "$APK"
+          python3 -c 'import sys,zipfile; z=zipfile.ZipFile(sys.argv[1]); assert "assets/index.android.bundle" in z.namelist(), "Missing React Native JS bundle"; print("JS bundle found")' "$APK"
       - uses: actions/upload-artifact@v4
         with:
           name: agenda-clinica-mm-debug-apk
