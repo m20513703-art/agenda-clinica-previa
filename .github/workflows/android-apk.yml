@@ -1,0 +1,42 @@
+name: Build Agenda Clinica Android APK
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'agenda-clinica-app/**'
+      - '.github/workflows/android-apk.yml'
+permissions:
+  contents: write
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agenda-clinica-app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: agenda-clinica-app/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - run: npm install
+      - run: npx expo prebuild --platform android --no-install
+      - run: cd android && ./gradlew assembleDebug
+      - name: Verify APK and bundle
+        run: |
+          APK=android/app/build/outputs/apk/debug/app-debug.apk
+          test -s "$APK"
+          apksigner verify --verbose "$APK"
+          unzip -l "$APK" | grep -E 'assets/index.android.bundle|lib/arm64-v8a/libhermes.so'
+          mkdir -p ../artifact && cp "$APK" ../artifact/agenda-clinica-mm-debug.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agenda-clinica-mm-apk
+          path: artifact/agenda-clinica-mm-debug.apk
+          retention-days: 30
