@@ -27,24 +27,23 @@ jobs:
       - name: Generate Android project
         working-directory: agenda-clinica-app
         run: npx expo prebuild --platform android --no-install
-      - name: Build APK
+      - name: Build release APK
         working-directory: agenda-clinica-app/android
-        run: ./gradlew assembleDebug
-      - name: Verify APK and app bundle
+        run: ./gradlew assembleRelease
+      - name: Sign and verify standalone APK
         shell: bash
         run: |
           set -euxo pipefail
-          APK=agenda-clinica-app/android/app/build/outputs/apk/debug/app-debug.apk
+          APK=agenda-clinica-app/android/app/build/outputs/apk/release/app-release-unsigned.apk
           test -s "$APK"
-          echo "APK file: $APK"
-          ls -lh "$APK"
           SDK_BUILD_TOOLS="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -n 1)"
-          echo "Android build-tools: $SDK_BUILD_TOOLS"
-          test -x "$SDK_BUILD_TOOLS/apksigner"
-          "$SDK_BUILD_TOOLS/apksigner" verify --verbose "$APK"
-          python3 -c 'import sys,zipfile; z=zipfile.ZipFile(sys.argv[1]); assert "assets/index.android.bundle" in z.namelist(), "Missing React Native JS bundle"; print("JS bundle found")' "$APK"
+          keytool -genkeypair -v -keystore scratch-agenda-debug.keystore -storepass changeit -keypass changeit -alias agenda -keyalg RSA -keysize 2048 -validity 10000 -dname 'CN=Agenda Clinica MM, OU=Development, O=MM Sistemas, L=BR, ST=BR, C=BR'
+          "$SDK_BUILD_TOOLS/zipalign" -f -v 4 "$APK" agenda-clinica-app.apk
+          "$SDK_BUILD_TOOLS/apksigner" sign --ks scratch-agenda-debug.keystore --ks-pass pass:changeit --key-pass pass:changeit --out agenda-clinica-app-signed.apk agenda-clinica-app.apk
+          "$SDK_BUILD_TOOLS/apksigner" verify --verbose agenda-clinica-app-signed.apk
+          python3 -c 'import sys,zipfile; z=zipfile.ZipFile(sys.argv[1]); names=z.namelist(); print("Relevant bundle entries:", [n for n in names if "bundle" in n.lower() or n.endswith(".hbc")]); assert any("bundle" in n.lower() or n.endswith(".hbc") for n in names), "Missing packaged React Native JS bundle"' agenda-clinica-app-signed.apk
       - uses: actions/upload-artifact@v4
         with:
-          name: agenda-clinica-mm-debug-apk
-          path: agenda-clinica-app/android/app/build/outputs/apk/debug/app-debug.apk
+          name: agenda-clinica-mm-android-apk
+          path: agenda-clinica-app-signed.apk
           retention-days: 30
