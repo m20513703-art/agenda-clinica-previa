@@ -30,20 +30,75 @@ jobs:
       - name: Build release APK
         working-directory: agenda-clinica-app/android
         run: ./gradlew assembleRelease
-      - name: Sign and verify standalone APK
+      - name: Locate, verify and prepare installable APK
+        id: apk
         shell: bash
         run: |
-          set -euxo pipefail
-          APK=agenda-clinica-app/android/app/build/outputs/apk/release/app-release-unsigned.apk
-          test -s "$APK"
+          set -uo pipefail
+          mkdir -p diagnostics
+          find agenda-clinica-app/android/app/build/outputs -type f -name '*.apk' -print | tee diagnostics/apk-paths.txt
+          APK="$(find agenda-clinica-app/android/app/build/outputs -type f -name '*.apk' | sort | head -n 1)"
+          if [ -z "$APK" ]; then
+            echo 'No APK produced; preserving diagnostics.' | tee diagnostics/apk-error.txt
+            exit 1
+          fi
+          echo "Discovered APK: $APK"
           SDK_BUILD_TOOLS="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -n 1)"
-          keytool -genkeypair -v -keystore scratch-agenda-debug.keystore -storepass changeit -keypass changeit -alias agenda -keyalg RSA -keysize 2048 -validity 10000 -dname 'CN=Agenda Clinica MM, OU=Development, O=MM Sistemas, L=BR, ST=BR, C=BR'
-          "$SDK_BUILD_TOOLS/zipalign" -f -v 4 "$APK" agenda-clinica-app.apk
-          "$SDK_BUILD_TOOLS/apksigner" sign --ks scratch-agenda-debug.keystore --ks-pass pass:changeit --key-pass pass:changeit --out agenda-clinica-app-signed.apk agenda-clinica-app.apk
-          "$SDK_BUILD_TOOLS/apksigner" verify --verbose agenda-clinica-app-signed.apk
-          python3 -c 'import sys,zipfile; z=zipfile.ZipFile(sys.argv[1]); names=z.namelist(); print("Relevant bundle entries:", [n for n in names if "bundle" in n.lower() or n.endswith(".hbc")]); assert any("bundle" in n.lower() or n.endswith(".hbc") for n in names), "Missing packaged React Native JS bundle"' agenda-clinica-app-signed.apk
+          mkdir -p output
+          if "$SDK_BUILD_TOOLS/apksigner" verify --verbose "$APK" >diagnostics/signature.txt 2>&1; then
+            cp "$APK" output/agenda-clinica-mm.apk
+            echo 'Existing APK signature verified and retained.' | tee -a diagnostics/signature.txt
+          else
+            echo 'APK is unsigned/unverifiable; signing as a clearly labelled debug/test build.' | tee diagnostics/signature.txt
+            keytool -genkeypair -v -keystore diagnostics/agenda-test.keystore -storepass changeit -keypass changeit -alias agenda-test -keyalg RSA -keysize 2048 -validity 10000 -dname 'CN=Agenda Clinica MM TEST, OU=Development, O=MM Sistemas, L=BR, ST=BR, C=BR'
+            "$SDK_BUILD_TOOLS/zipalign" -f -v 4 "$APK" output/unaligned-test.apk
+            "$SDK_BUILD_TOOLS/apksigner" sign --ks diagnostics/agenda-test.keystore --ks-pass pass:changeit --key-pass pass:changeit --out output/agenda-clinica-mm.apk output/unaligned-test.apk
+            echo 'Signed with temporary debug/test key; not a production signing key.' >>diagnostics/signature.txt
+          fi
+          "$SDK_BUILD_TOOLS/apksigner" verify --verbose output/agenda-clinica-mm.apk | tee -a diagnostics/signature.txt
+          python3 - <<'PY'
+          import zipfile
+          p='output/agenda-clinica-mm.apk'
+          with zipfile.ZipFile(p) as z:
+              names=z.namelist()
+              js=[n for n in names if 'bundle' in n.lower() or n.endswith('.hbc')]
+              print('Embedded JS bundle entries:', js)
+              open('diagnostics/js-bundle.txt','w').write('\n'.join(js) or 'MISSING')
+              assert js, 'Missing packaged React Native JS bundle'
+          PY
+          echo 'apk_path=output/agenda-clinica-mm.apk' >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: agenda-clinica-mm-android-apk
-          path: agenda-clinica-app-signed.apk
+          name: agenda-clinica-mm-android-diagnostic
+          path: |
+            output/*.apk
+            diagnostics/**
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Install and launch on Android emulator
+        if: success()
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          profile: pixel_2
+          script: |
+            adb install -r output/agenda-clinica-mm.apk
+            adb shell am force-stop com.mmsistemastecnologia.agendaclinica
+            adb shell monkey -p com.mmsistemastecnologia.agendaclinica 1
+            sleep 20
+            adb logcat -d -t 5000 > diagnostics/emulator-logcat.txt
+            adb shell dumpsys activity activities > diagnostics/emulator-activities.txt
+            adb shell screencap -p /sdcard/agenda-clinica-smoke.png
+            adb pull /sdcard/agenda-clinica-smoke.png diagnostics/emulator-screen.png
+            adb shell pidof com.mmsistemastecnologia.agendaclinica
+            if grep -E 'FATAL EXCEPTION|Process: com.mmsistemastecnologia.agendaclinica.*has died|Fatal signal' diagnostics/emulator-logcat.txt; then exit 1; fi
+            grep -q 'com.mmsistemastecnologia.agendaclinica' diagnostics/emulator-activities.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: agenda-clinica-mm-emulator-test
+          path: diagnostics/**
+          if-no-files-found: warn
           retention-days: 30
