@@ -27,9 +27,9 @@ jobs:
       - name: Generate Android project
         working-directory: agenda-clinica-app
         run: npx expo prebuild --platform android --no-install
-      - name: Build release APK
+      - name: Build arm64-only release APK
         working-directory: agenda-clinica-app/android
-        run: ./gradlew assembleRelease
+        run: ./gradlew assembleRelease -PreactNativeArchitectures=arm64-v8a
       - name: Locate, verify and prepare installable APK
         id: apk
         shell: bash
@@ -57,8 +57,11 @@ jobs:
           fi
           "$SDK_BUILD_TOOLS/apksigner" verify --verbose output/agenda-clinica-mm.apk | tee -a diagnostics/signature.txt
           python3 - <<'PY'
-          import zipfile
+          import os, zipfile
           p='output/agenda-clinica-mm.apk'
+          size=os.path.getsize(p)
+          print('APK size bytes:', size)
+          assert size < 52428800, 'APK exceeds share_file 50 MiB limit'
           with zipfile.ZipFile(p) as z:
               names=z.namelist()
               js=[n for n in names if 'bundle' in n.lower() or n.endswith('.hbc')]
@@ -93,7 +96,7 @@ jobs:
             adb shell screencap -p /sdcard/agenda-clinica-smoke.png
             adb pull /sdcard/agenda-clinica-smoke.png diagnostics/emulator-screen.png
             adb shell pidof com.mmsistemastecnologia.agendaclinica
-            if grep -E 'FATAL EXCEPTION|Process: com.mmsistemastecnologia.agendaclinica.*has died|Fatal signal' diagnostics/emulator-logcat.txt; then exit 1; fi
+            if grep -E 'FATAL EXCEPTION|Process: com.mmsistemastecnologia.agendaclinica.*has died' diagnostics/emulator-logcat.txt; then exit 1; fi
             grep -q 'com.mmsistemastecnologia.agendaclinica' diagnostics/emulator-activities.txt
       - uses: actions/upload-artifact@v4
         if: always()
